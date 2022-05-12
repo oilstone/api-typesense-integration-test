@@ -1,0 +1,23 @@
+{
+    "name": "oilstone/api-typesense-integration",
+    "description": "Integration service classes to connect garethhudson07/api resources with a Typesense index",
+    "homepage": "https://github.com/oilstone/api-typesense-integration",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Online Solutions",
+            "email": "support@onlinesolutionsltd.com"
+        }
+    ],
+    "require": {
+        "php": ">=8.0",
+        "illuminate/support": "^8.0|^9.0",
+        "oilstone/api-resource-loader": "^4.0",
+        "typesense/laravel-scout-typesense-driver": "^5.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Oilstone\\ApiTypesenseIntegration\\": "src"
+        }
+    }
+}
