@@ -2,11 +2,13 @@
 
 namespace Oilstone\ApiTypesenseIntegration\Models;
 
+use Api\Result\Contracts\Record;
+use Api\Schema\Property;
+use Api\Schema\Schema;
 use Illuminate\Database\Eloquent\Model as EloquentModel;
 use Laravel\Scout\Searchable;
-use Oilstone\ApiResourceLoader\Resources\Resource;
 
-class ResourceModel extends EloquentModel
+class SearchModel extends EloquentModel
 {
     use Searchable;
 
@@ -30,14 +32,14 @@ class ResourceModel extends EloquentModel
     protected string $type;
 
     /**
-     * @var array
+     * @var Record
      */
-    protected $record;
+    protected Record $record;
 
     /**
-     * @var Resource|null
+     * @var Schema
      */
-    protected $resource = null;
+    protected Schema $schema;
 
     /**
      * Make all attributes mass assignable
@@ -47,13 +49,15 @@ class ResourceModel extends EloquentModel
     protected $guarded = false;
 
     /**
-     * @param array $record
-     * @return self
+     * @param string $type
+     * @param Record $record
+     * @param Schema $schema
+     * @return static
      */
-    public static function make(string $type, array $record, Resource $resource = null): self
+    public static function make(string $type, Record $record, Schema $schema): static
     {
-        return (new static($record))
-            ->setResource($resource)
+        return (new static($record->getAttributes()))
+            ->setSchema($schema)
             ->setType($type)
             ->setTable($type)
             ->setRecord($record);
@@ -70,24 +74,13 @@ class ResourceModel extends EloquentModel
 
         foreach ($this->getAttributes() as $key => $value) {
             if ($property = $this->getIndexProperty($key)) {
-                if (($property['resolves'] ?? false) === $key) {
-                    $key = $property['name'];
-                }
-
-                if ($property['modifier'] ?? false) {
-                    $value = $property['modifier']($value);
-                } else {
-                    $value = $value ?: null;
-                }
-
-                if (!($property['optional'] ?? false)) {
-                    switch ($property['type']) {
-                        case 'int32':
-                        case 'int64':
+                if (!($property->optional ?? false)) {
+                    switch ($property->getType()) {
+                        case 'integer':
                             $value = $value ?: 0;
                             break;
 
-                        case 'bool':
+                        case 'boolean':
                             $value = boolval($value ?: false);
                             break;
 
@@ -100,7 +93,7 @@ class ResourceModel extends EloquentModel
             }
         }
 
-        return optional($this->resource)->getIndexArray($attributes) ?? $attributes;
+        return $attributes;
     }
 
     /**
@@ -124,15 +117,15 @@ class ResourceModel extends EloquentModel
      */
     public function typesenseQueryBy(): array
     {
-        return array_map(fn ($field) => $field['name'], array_values(array_filter($this->getIndexSchema(), fn ($field) => ($field['index'] ?? true) === true)));
+        return array_column(array_filter($this->getIndexFields(), fn (array $field) => $field['index']), 'name');
     }
 
     /**
      * Get the value of record
      *
-     * @return array
+     * @return Record
      */
-    public function getRecord(): mixed
+    public function getRecord(): Record
     {
         return $this->record;
     }
@@ -140,10 +133,10 @@ class ResourceModel extends EloquentModel
     /**
      * Set the value of record
      *
-     * @param array  $record
-     * @return self
+     * @param Record  $record
+     * @return static
      */
-    public function setRecord(array $record): self
+    public function setRecord(Record $record): static
     {
         $this->record = $record;
 
@@ -164,9 +157,9 @@ class ResourceModel extends EloquentModel
      * Set the value of type
      *
      * @param string  $type
-     * @return self
+     * @return static
      */
-    public function setType(string $type): self
+    public function setType(string $type): static
     {
         $this->type = $type;
 
@@ -174,24 +167,24 @@ class ResourceModel extends EloquentModel
     }
 
     /**
-     * Get the value of resource
+     * Get the value of schema
      *
-     * @return Resource|null
+     * @return Schema
      */
-    public function getResource(): ?Resource
+    public function getSchema(): ?Schema
     {
-        return $this->resource;
+        return $this->schema;
     }
 
     /**
-     * Set the value of resource
+     * Set the value of schema
      *
-     * @param Resource|null  $resource
-     * @return self
+     * @param Schema  $schema
+     * @return static
      */
-    public function setResource(?Resource $resource): self
+    public function setSchema(?Schema $schema): static
     {
-        $this->resource = $resource;
+        $this->schema = $schema;
 
         return $this;
     }
@@ -201,13 +194,13 @@ class ResourceModel extends EloquentModel
      */
     protected function getIndexFields(): array
     {
-        return array_map(function (array $field) {
+        return array_map(function (Property $property) {
             return [
-                'name' => $field['name'],
-                'type' => $field['type'],
-                'facet' => $field['facet'] ?? false,
-                'optional' => $field['optional'] ?? !($field['index'] ?? true),
-                'index' => $field['index'] ?? true,
+                'name' => $property->getName(),
+                'type' => $property->getType(),
+                'facet' => $property->facet ?? false,
+                'optional' => $property->optional ?? false,
+                'index' => $property->searchable ?? false,
             ];
         }, $this->getIndexSchema());
     }
@@ -217,16 +210,16 @@ class ResourceModel extends EloquentModel
      */
     protected function getIndexSchema(): array
     {
-        return optional($this->resource)->getIndexSchema() ?? [];
+        return array_values(array_filter($this->schema->getProperties(), fn (Property $property) => $property->indexed || $property->searchable));
     }
 
     /**
      * @param string $key
-     * @return null|array
+     * @return Property|null
      */
-    protected function getIndexProperty(string $key): ?array
+    protected function getIndexProperty(string $key): ?Property
     {
-        return optional($this->resource)->getIndexProperty($key);
+        return $this->schema->getProperty($key);
     }
 
     /**
@@ -234,7 +227,13 @@ class ResourceModel extends EloquentModel
      */
     protected function getSortingField(): string
     {
-        return optional($this->resource)->getIndexSort() ?? 'id';
+        foreach ($this->schema->getProperties() as $property) {
+            if ($property->defaultSort) {
+                return $property->getName() . ':' . (is_string($property->defaultSort) ? $property->defaultSort : 'asc');
+            }
+        }
+
+        return 'id';
     }
 
     /**
@@ -242,8 +241,8 @@ class ResourceModel extends EloquentModel
      *
      * @return string
      */
-    public function searchableAs()
+    public function searchableAs(): string
     {
-        return optional($this->resource)->searchableAs($this->getAttributes()) ?? (config('scout.prefix') . $this->getTable());
+        return config('scout.prefix') . $this->type;
     }
 }
