@@ -2,9 +2,9 @@
 
 namespace Oilstone\ApiTypesenseIntegration\Models;
 
-use Api\Result\Contracts\Record;
 use Api\Schema\Property;
 use Api\Schema\Schema;
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model as EloquentModel;
 use Laravel\Scout\Searchable;
 
@@ -32,11 +32,6 @@ class SearchModel extends EloquentModel
     protected string $type;
 
     /**
-     * @var Record
-     */
-    protected Record $record;
-
-    /**
      * @var Schema
      */
     protected Schema $schema;
@@ -50,17 +45,16 @@ class SearchModel extends EloquentModel
 
     /**
      * @param string $type
-     * @param Record $record
+     * @param array $attributes
      * @param Schema $schema
      * @return static
      */
-    public static function make(string $type, Record $record, Schema $schema): static
+    public static function make(string $type, array $attributes, Schema $schema): static
     {
-        return (new static($record->getAttributes()))
+        return (new static($attributes))
             ->setSchema($schema)
             ->setType($type)
-            ->setTable($type)
-            ->setRecord($record);
+            ->setTable($type);
     }
 
     /**
@@ -74,7 +68,7 @@ class SearchModel extends EloquentModel
 
         foreach ($this->getAttributes() as $key => $value) {
             if ($property = $this->getIndexProperty($key)) {
-                if (!($property->optional ?? false)) {
+                if (isset($value) || !($property->optional ?? false)) {
                     switch ($property->getType()) {
                         case 'integer':
                             $value = $value ?: 0;
@@ -82,6 +76,12 @@ class SearchModel extends EloquentModel
 
                         case 'boolean':
                             $value = boolval($value ?: false);
+                            break;
+
+                        case 'timestamp':
+                        case 'date':
+                        case 'datetime':
+                            $value = Carbon::parse($value ?: null)->unix();
                             break;
 
                         default:
@@ -103,11 +103,11 @@ class SearchModel extends EloquentModel
      */
     public function getCollectionSchema(): array
     {
-        return [
+        return array_filter([
             'name' => $this->searchableAs(),
             'fields' => $this->getIndexFields(),
             'default_sorting_field' => $this->getSortingField(),
-        ];
+        ]);
     }
 
     /**
@@ -118,29 +118,6 @@ class SearchModel extends EloquentModel
     public function typesenseQueryBy(): array
     {
         return array_column(array_filter($this->getIndexFields(), fn (array $field) => $field['index']), 'name');
-    }
-
-    /**
-     * Get the value of record
-     *
-     * @return Record
-     */
-    public function getRecord(): Record
-    {
-        return $this->record;
-    }
-
-    /**
-     * Set the value of record
-     *
-     * @param Record  $record
-     * @return static
-     */
-    public function setRecord(Record $record): static
-    {
-        $this->record = $record;
-
-        return $this;
     }
 
     /**
@@ -195,12 +172,24 @@ class SearchModel extends EloquentModel
     protected function getIndexFields(): array
     {
         return array_map(function (Property $property) {
+            $optional = $property->optional ?? false;
+            $searchable = $property->searchable ?? false;
+            $isDefaultSort = $property->defaultSort ?? false;
+
+            if (!$searchable) {
+                $optional = true;
+            }
+
+            if ($isDefaultSort) {
+                $optional = false;
+            }
+
             return [
                 'name' => $property->getName(),
-                'type' => $property->getType(),
+                'type' => $this->transformType($property),
                 'facet' => $property->facet ?? false,
-                'optional' => $property->optional ?? false,
-                'index' => $property->searchable ?? false,
+                'optional' => $optional,
+                'index' => $searchable,
             ];
         }, $this->getIndexSchema());
     }
@@ -219,21 +208,27 @@ class SearchModel extends EloquentModel
      */
     protected function getIndexProperty(string $key): ?Property
     {
-        return $this->schema->getProperty($key);
+        $property = $this->schema->getProperty($key);
+
+        if (!$property || (!$property->indexed && !$property->searchable)) {
+            return null;
+        }
+
+        return $property;
     }
 
     /**
-     * @return string
+     * @return string|null
      */
-    protected function getSortingField(): string
+    protected function getSortingField(): ?string
     {
         foreach ($this->schema->getProperties() as $property) {
             if ($property->defaultSort) {
-                return $property->getName() . ':' . (is_string($property->defaultSort) ? $property->defaultSort : 'asc');
+                return $property->getName();
             }
         }
 
-        return 'id';
+        return null;
     }
 
     /**
@@ -244,5 +239,24 @@ class SearchModel extends EloquentModel
     public function searchableAs(): string
     {
         return config('scout.prefix') . $this->type;
+    }
+
+    /**
+     * @param Property $property
+     * @return string
+     */
+    protected function transformType(Property $property): string
+    {
+        switch ($property->getType()) {
+            case 'richtext':
+                return 'string';
+
+            case 'timestamp':
+            case 'date':
+            case 'datetime':
+                return 'int32';
+        }
+
+        return $property->getType();
     }
 }
